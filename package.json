@@ -1,5 +1,5 @@
 {
-  "name": "quorix-paystack-backend",
+  "name": "q-payment-api",
   "version": "1.0.0",
   "main": "index.js",
   "type": "module",

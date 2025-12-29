@@ -14,7 +14,7 @@ export default async function handler(req, res) {
   try {
     const response = await axios.post('https://api.paystack.co/transaction/initialize', {
       email,
-      amount: amount * 100,
+      amount: amount * 100, // Paystack expects amount in kobo
       channels: ['bank_transfer']
     }, {
       headers: {
@@ -33,9 +33,9 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    console.error('Bank transfer init error:', error?.response?.data || error.toString());
+    console.error('Deposit init error:', error?.response?.data || error.toString());
     res.status(500).json({
-      error: error?.response?.data || 'Error initializing bank transfer'
+      error: error?.response?.data || 'Error initializing deposit'
     });
   }
 }
