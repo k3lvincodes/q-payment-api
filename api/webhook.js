@@ -1,62 +1,129 @@
 import crypto from 'crypto';
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = process.env.SUPABASE_URL;
+// Use Service Role Key if available for bypassing RLS, otherwise Anon Key
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+const paystackSecret = process.env.PAYSTACK_SECRET_KEY;
+
+if (!supabaseUrl || !supabaseKey) {
+    console.error('Missing SUPABASE_URL or SUPABASE_KEY');
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default async function handler(req, res) {
-    // Set CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-paystack-signature');
-
-    // Handle preflight request
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
-
+    // Only allow POST requests
     if (req.method !== 'POST') {
-        return res.status(405).json({ error: 'Method not allowed' });
+        return res.status(405).send('Method Not Allowed');
     }
 
-    try {
-        const secret = process.env.PAYSTACK_SECRET_KEY;
-
-        if (!secret) {
-            console.error('PAYSTACK_SECRET_KEY is not defined');
-            return res.status(500).json({ error: 'Server configuration error' });
-        }
-
-        const body = req.body;
-        if (!body) {
-            return res.status(400).json({ error: 'No request body provided' });
-        }
-
-        // Paystack sends the body as JSON, but signature uses stringified version.
-        // Important: If using a framework that parses body, ensure JSON.stringify matches Paystack's raw body.
-        // For robustness in this setup, we rely on JSON.stringify(req.body).
-        const hash = crypto.createHmac('sha512', secret)
-            .update(JSON.stringify(body))
-            .digest('hex');
-
-        if (hash !== req.headers['x-paystack-signature']) {
-            return res.status(401).json({ error: 'Invalid signature' });
-        }
-
-        const event = body;
-
-        if (event.event === 'charge.success') {
-            const { reference, amount, customer, channel } = event.data;
-
-            console.log(`Deposit successful for ${customer.email}:`, {
-                reference,
-                amount: amount / 100, // Convert back to main currency unit
-                channel
-            });
-
-            // TODO: Update user balance in database here
-            // await updateBalance(customer.email, amount / 100);
-        }
-
-        res.status(200).json({ status: 'success' });
-    } catch (error) {
-        console.error('Webhook error:', error);
-        res.status(500).json({ error: 'Webhook processing failed', details: error.message });
+    // specific check for Paystack signature
+    const signature = req.headers['x-paystack-signature'];
+    if (!signature) {
+        return res.status(400).send('Missing signature');
     }
+
+    const hash = crypto.createHmac('sha512', paystackSecret)
+        .update(JSON.stringify(req.body))
+        .digest('hex');
+
+    if (hash !== signature) {
+        return res.status(400).send('Invalid signature');
+    }
+
+    const event = req.body;
+
+    if (event.event === 'charge.success') {
+        const { reference, amount, customer, channel, metadata } = event.data;
+        const email = customer.email;
+        const amountInNaira = amount / 100; // Paystack sends amount in kobo
+
+        try {
+            // 1. Find User
+            // We need to resolve the user. If metadata has user_id, use it.
+            // Otherwise try to find by email in profiles.
+            let userId = metadata?.user_id;
+
+            if (!userId) {
+                const { data: userProfile, error: userError } = await supabase
+                    .from('profiles')
+                    .select('id')
+                    .eq('email', email)
+                    .single();
+
+                if (userProfile) {
+                    userId = userProfile.id;
+                } else {
+                    console.error(`User not found for email: ${email}`);
+                    // Return 200 to acknowledge webhook so Paystack doesn't retry indefinitely
+                    return res.status(200).send('User not found');
+                }
+            }
+
+            // 2. Check for duplicate transaction
+            const { data: existingTx } = await supabase
+                .from('transactions')
+                .select('id')
+                .like('description', `%${reference}%`) // Assuming description contains reference
+                .single();
+
+            if (existingTx) {
+                return res.status(200).send('Transaction already processed');
+            }
+
+            // 3. Insert Transaction
+            const { error: txError } = await supabase
+                .from('transactions')
+                .insert({
+                    user_id: userId,
+                    amount: amountInNaira,
+                    type: 'credit',
+                    description: `Deposit via ${channel} (Ref: ${reference})`,
+                    created_at: new Date().toISOString()
+                });
+
+            if (txError) {
+                console.error('Transaction insert error:', txError);
+                return res.status(500).send('Error recording transaction');
+            }
+
+            // 4. Update Balance
+            // Try RPC first (atomic)
+            const { error: rpcError } = await supabase
+                .rpc('increment_balance', { user_id: userId, amount: amountInNaira });
+
+            if (rpcError) {
+                console.warn('RPC increment_balance failed, falling back to manual update:', rpcError);
+
+                // Fallback: Get current balance and update
+                const { data: profile } = await supabase
+                    .from('profiles')
+                    .select('balance')
+                    .eq('id', userId)
+                    .single();
+
+                const newBalance = (profile?.balance || 0) + amountInNaira;
+
+                const { error: updateError } = await supabase
+                    .from('profiles')
+                    .update({ balance: newBalance })
+                    .eq('id', userId);
+
+                if (updateError) {
+                    console.error('Balance update error:', updateError);
+                    return res.status(500).send('Error updating balance');
+                }
+            }
+
+            return res.status(200).send('Webhook processed successfully');
+
+        } catch (err) {
+            console.error('Webhook processing error:', err);
+            return res.status(500).send('Internal Server Error');
+        }
+    }
+
+    // Acknowledge other events
+    res.status(200).send('Event received');
 }
