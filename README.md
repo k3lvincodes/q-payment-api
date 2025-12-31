@@ -81,7 +81,7 @@ POST /api/deposit/initiate
 **Example Request:**
 
 ```bash
-curl -X POST https://your-api-url.vercel.app/api/deposit/initiate \
+curl -X POST https://q-payment-api.vercel.app/api/deposit/initiate \
   -H "Content-Type: application/json" \
   -H "x-api-key: your-api-key" \
   -d '{
@@ -143,7 +143,7 @@ GET /api/deposit/verify
 **Example Request:**
 
 ```bash
-curl -X GET "https://your-api-url.vercel.app/api/deposit/verify?reference=abc123xyz" \
+curl -X GET "https://q-payment-api.vercel.app/api/deposit/verify?reference=abc123xyz" \
   -H "x-api-key: your-api-key"
 ```
 
@@ -272,7 +272,7 @@ The webhook validates incoming requests using HMAC SHA512 signature verification
 
 1. Log in to your [Paystack Dashboard](https://dashboard.paystack.com)
 2. Navigate to **Settings** → **API Keys & Webhooks**
-3. Enter your webhook URL: `https://your-api-url.vercel.app/api/webhook`
+3. Enter your webhook URL: `https://q-payment-api.vercel.app/api/webhook`
 4. Save the configuration
 
 ---
